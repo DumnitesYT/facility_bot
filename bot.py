@@ -12,6 +12,22 @@ import json
 import subprocess
 import shutil
 import socket
+from flask import Flask
+import os
+
+# Обязательно проверяем наличие переменных
+BOT_TOKEN = os.environ.get("8682273233:AAG-t_tGwyplX8prlpY0iABMMJqitliNomU")
+if not BOT_TOKEN:
+    print("❌ ОШИБКА: Переменная BOT_TOKEN не задана!")
+    exit(1)
+
+ALLOWED_USERS_URL = os.environ.get("ALLOWED_USERS_URL", "https://pastebin.com/raw/LZqAm5Ja")
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "OK", 200
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
